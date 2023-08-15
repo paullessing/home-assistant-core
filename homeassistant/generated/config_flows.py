@@ -394,6 +394,7 @@ FLOWS = {
         "ruuvitag_ble",
         "rympro",
         "sabnzbd",
+        "samknows",
         "samsungtv",
         "schlage",
         "scrape",
