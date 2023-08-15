@@ -4,18 +4,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
+from .whitebox import WhiteboxApi
 
 _LOGGER = logging.getLogger(__name__)
 
-# TODO adjust the data schema to the data that you need
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required("username"): str,
@@ -33,10 +35,26 @@ class PlaceholderHub:
     def __init__(self) -> None:
         """Initialize."""
 
-    async def authenticate(self, username: str, password: str) -> bool:
+    async def authenticate(
+        self, session: aiohttp.ClientSession, username: str, password: str
+    ) -> bool:
         """Test if we can authenticate with the host."""
 
-        return True
+        whitebox = WhiteboxApi(username, password)
+
+        return await whitebox.login(session=session)
+
+        # async with session.post(
+        #     "https://sentinel-api.cloud.samknows.com/login",
+        #     json={"email": username, "password": password, "device": "1234567890"},
+        #     headers={"Content-Type": "application/json"},
+        # ) as resp:
+        #     try:
+        #         response = await resp.json()
+        #         _LOGGER.warning(response)
+        #         return response.get("code") == "OK"
+        #     except aiohttp.ClientConnectorError as e:
+        #         return False
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
@@ -54,8 +72,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     hub = PlaceholderHub()
 
-    if not await hub.authenticate(data["username"], data["password"]):
-        raise InvalidAuth
+    session = aiohttp_client.async_get_clientsession(hass)
+
+    try:
+        if not await hub.authenticate(session, data["username"], data["password"]):
+            raise InvalidAuth
+    finally:
+        session.close()
 
     # If you cannot connect:
     # throw CannotConnect
@@ -63,7 +86,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     # InvalidAuth
 
     # Return info that you want to store in the config entry.
-    return {"title": "SamKnows Whitebox"}
+    return {"title": "SamKnows.one (%s)" % data["username"]}
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
