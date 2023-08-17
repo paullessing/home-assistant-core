@@ -7,6 +7,30 @@ import jwt
 _LOGGER = logging.getLogger(__name__)
 
 
+class UnitDetails:
+    """Contains information about a specific unit."""
+
+    def __init__(
+        self,
+        unit_id: int,
+        front_name: str | None = None,
+        mac_address: str | None = None,
+        base: str | None = None,
+        serial_number: str | None = None,
+        sw_version: str | None = None,
+        is_tt_compatible: bool = False,
+    ):
+        self.unit_id = unit_id
+        self.front_name = front_name
+        self.mac_address = mac_address
+        self.base = base
+        self.serial_number = serial_number
+        self.sw_version = sw_version
+        self.is_tt_compatible = is_tt_compatible
+
+        self.metrics = {}
+
+
 class WhiteboxApi:
     """Connects to the SamKnows.one API and fetches Whitebox data."""
 
@@ -17,6 +41,8 @@ class WhiteboxApi:
         self.access_token_expiry = None
         self.refresh_token = None
         self.refresh_token_expiry = None
+        self.units: list[UnitDetails] = []
+        self._unit_cache = {}
 
     async def login(self, session: aiohttp.ClientSession = None):
         if session is None:
@@ -96,15 +122,90 @@ class WhiteboxApi:
                 _LOGGER.error("Failed to renew access token, %s", e)
                 return False
 
-    async def fetch_data(self):
+    # TODO dangerous arguments
+    async def _make_request(
+        self, method: str, url: str, json: dict = None, headers: dict | None = {}
+    ):
         token = await self._get_fresh_token()
-        async with self._session.get(
-            "https://unit-analytics-api.cloud.samknows.com/102479809/scheduled_tests_daily?date=2023-08-16&metric=httpgetmt",
-            headers={"Authorization": f"Bearer {token}"},
+        async with self._session.request(
+            method,
+            url,
+            headers={"Authorization": f"Bearer {token}"} | headers,
+            json=json,
         ) as resp:
             response = await resp.json()
             if response.get("code") == "OK":
-                return {"102479809": response["data"]}
+                return response.get("data")
+            else:
+                _LOGGER.error("Request failed: %s %s\n%s", method, url, json)
+                raise RequestFailed()
+
+    async def fetch_data(self):
+        """Main function to fetch unit(s) information."""
+        await self._fetch_units()
+
+        # _LOGGER.info("Units fetched, %s [Cache %s]", self.units, self._unit_cache)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        metric = "httpgetmt"
+
+        units = {}
+
+        for unit in self.units:
+            data = await self._make_request(
+                "GET",
+                f"https://unit-analytics-api.cloud.samknows.com/{unit.unit_id}/scheduled_tests_daily?date={today}&metric={metric}",
+            )
+            if len(data["results"]) > 0:
+                unit.metrics[metric] = data["results"][0][
+                    "metricValue"
+                ]  # TODO log all results not just the first
+                _LOGGER.info("Metrics, %s", unit.metrics)
+                units[unit.unit_id] = unit
+
+        return units
+
+        # token = await self._get_fresh_token()
+        # async with self._session.get(
+        #     "",
+        #     headers={"Authorization": f"Bearer {token}"},
+        # ) as resp:
+        #     response = await resp.json()
+        #     if response.get("code") == "OK":
+        #         return {"102479809": response["data"]}
+        #     else:
+        #         raise RequestFailed()
+
+    async def _fetch_units(self):
+        response = await self._make_request(
+            "GET",
+            "https://sentinel-api.cloud.samknows.com/myAccessibles",
+        )
+        self.units = []
+        for unit_data in response["units"]:
+            unit_id = unit_data["unitId"]
+            if self._unit_cache.get(unit_id) is not None:
+                _LOGGER.info(f"Adding unit {unit_id} from cache")
+                self.units.append(self._unit_cache.get(unit_id))
+            else:
+                _LOGGER.info(f"Unit {unit_id}: cache miss, fetching")
+                unit = await self._fetch_unit_information(unit_id)
+                self.units.append(unit)
+                self._unit_cache[unit_id] = unit
+
+    async def _fetch_unit_information(self, unit_id: int) -> UnitDetails:
+        data = await self._make_request(
+            "GET", f"https://zeus-api.samknows.one/units/{unit_id}"
+        )
+        return UnitDetails(
+            unit_id=data["id"],
+            front_name=data["front_name"],
+            mac_address=data["mac"],
+            base=data["base"],
+            serial_number=data["serial_number"],
+            sw_version=data["package_version"],
+            is_tt_compatible=data["is_tt_compatible"],
+        )
 
 
 class RefreshFailed(Exception):
@@ -113,3 +214,7 @@ class RefreshFailed(Exception):
 
 class CouldNotAuthenticate(Exception):
     """Raised when authentication has failed."""
+
+
+class RequestFailed(Exception):
+    """Raised when a request returns a non-OK error code."""

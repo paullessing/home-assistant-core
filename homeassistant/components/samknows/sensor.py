@@ -6,6 +6,7 @@ import async_timeout
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -13,7 +14,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .whitebox import WhiteboxApi
+from .whitebox import UnitDetails, WhiteboxApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ async def async_setup_entry(
     _LOGGER.info("Coordinator has run %s", coordinator.data)
 
     async_add_entities(
-        WhiteboxEntity(coordinator, unit_id) for unit_id in coordinator.data
+        DownloadSpeedEntity(coordinator, unit_id, unit)
+        for unit_id, unit in coordinator.data.items()
     )
 
 
@@ -91,7 +93,7 @@ class WhitebooxCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Done updating")
 
 
-class WhiteboxEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
+class DownloadSpeedEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
     """An entity using CoordinatorEntity.
 
     The CoordinatorEntity class provides:
@@ -102,24 +104,25 @@ class WhiteboxEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
 
     """
 
-    def __init__(self, coordinator: WhitebooxCoordinator, unit_id: str) -> None:
+    def __init__(
+        self, coordinator: WhitebooxCoordinator, unit_id: str, unit: UnitDetails
+    ) -> None:
         """Pass coordinator to CoordinatorEntity."""
         _LOGGER.debug("Initialising entity %s", unit_id)
         super().__init__(coordinator, context=unit_id)
         self.unit_id = unit_id
+        self.unit = unit
 
         self._attr_device_class = SensorDeviceClass.DATA_RATE
-        self._attr_unique_id = f"whitebox_{unit_id}"
+        self._attr_unique_id = f"whitebox_{unit_id}_httpgetmt"
         self._attr_native_unit_of_measurement = "B/s"
         self._attr_suggested_unit_of_measurement = "Mbit/s"
-        self._attr_name = f"Whitebox {unit_id}"
+        self._attr_name = "HTTP Download"
 
-        self._attr_native_value = self.coordinator.data[self.unit_id]["results"][0][
-            "metricValue"
-        ]
+        self._attr_native_value = unit.metrics["httpgetmt"]
 
-        _LOGGER.debug("Data is %s", self.coordinator.data[self.unit_id])
-        _LOGGER.debug("Value %s", self._attr_state)
+        _LOGGER.debug("Data is %s", unit.metrics["httpgetmt"])
+        # _LOGGER.debug("Value %s", self._attr_state)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -127,3 +130,19 @@ class WhiteboxEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
         _LOGGER.debug("Coordinator update %s", self.unit_id)
         self._attr_state = True  # self.coordinator.data[self.idx]["state"]
         self.async_write_ha_state()
+
+    @property
+    def device_info(
+        self,
+    ) -> DeviceInfo:  # TODO or just add it as self._attr_device_info
+        """Return the device info."""
+        return DeviceInfo(
+            identifiers={
+                # Unique identifier within this domain
+                (DOMAIN, self.unit_id)
+            },
+            name=f"Whitebox {self.unit_id}",
+            manufacturer="SamKnows",
+            model=f"Whitebox {self.unit.base}",
+            sw_version=self.unit.sw_version,
+        )
