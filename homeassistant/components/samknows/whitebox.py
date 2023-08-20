@@ -4,37 +4,16 @@ import logging
 import aiohttp
 import jwt
 
+from .api_config import *
+from .models import *
+
 _LOGGER = logging.getLogger(__name__)
-
-
-class UnitDetails:
-    """Contains information about a specific unit."""
-
-    def __init__(
-        self,
-        unit_id: int,
-        front_name: str | None = None,
-        mac_address: str | None = None,
-        base: str | None = None,
-        serial_number: str | None = None,
-        sw_version: str | None = None,
-        is_tt_compatible: bool = False,
-    ):
-        self.unit_id = unit_id
-        self.front_name = front_name
-        self.mac_address = mac_address
-        self.base = base
-        self.serial_number = serial_number
-        self.sw_version = sw_version
-        self.is_tt_compatible = is_tt_compatible
-
-        self.metrics = {}
 
 
 class WhiteboxApi:
     """Connects to the SamKnows.one API and fetches Whitebox data."""
 
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str) -> None:
         self.username = username
         self.password = password
         self.access_token = None
@@ -43,13 +22,15 @@ class WhiteboxApi:
         self.refresh_token_expiry = None
         self.units: list[UnitDetails] = []
         self._unit_cache = {}
+        self._session = None
 
     async def login(self, session: aiohttp.ClientSession = None):
         if session is None:
-            self._session = aiohttp.ClientSession()
+            if self._session is None:
+                self._session = aiohttp.ClientSession()
             session = self._session
         async with session.post(
-            "https://sentinel-api.cloud.samknows.com/login",
+            f"https://{SENTINEL_API_URL}/login",
             json={
                 "email": self.username,
                 "password": self.password,
@@ -62,7 +43,7 @@ class WhiteboxApi:
                 _LOGGER.info(response)
                 if response.get("code") == "OK":
                     self.access_token = response["data"]["accessToken"]
-                    self.access_token_expiry = self._get_token_expiry(
+                    self.access_token_expiry = _get_token_expiry(
                         token=self.access_token
                     )
                     refresh_token = response["data"]["refreshToken"]
@@ -80,30 +61,29 @@ class WhiteboxApi:
             except aiohttp.ClientConnectorError:
                 return False
 
-    def _get_token_expiry(self, token: str):
-        decoded_data = jwt.decode(
-            jwt=token,
-            algorithms=["HS256", "RS256"],
-            options={"verify_signature": False},
-        )
-        _LOGGER.warning("Decoded JWT, %s", decoded_data)
-        return datetime.fromtimestamp(decoded_data["exp"])
-
     async def _get_fresh_token(self) -> str:
-        if datetime.now() >= self.access_token_expiry:
-            refreshed = await self._refresh_token()
-            if not refreshed:
-                logged_in = await self.login(self._session)
-                if not logged_in:
-                    raise CouldNotAuthenticate()
-        return self.access_token
+        """Ensures that the token is fresh, then returns it."""
 
-    async def _refresh_token(self) -> bool:
+        if datetime.now() < self.access_token_expiry:
+            return self.access_token
+
+        refreshed = await self._refresh_access_token()
+        if not refreshed:
+            logged_in = await self.login()
+            if not logged_in:
+                raise CouldNotAuthenticate()
+
+    async def _refresh_access_token(self) -> bool:
+        """Refresh the current auth token.
+        Returns True if the token was renewed.
+        Returns False if an error occurred during renewal.
+        TODO raise the correct errors.
+        """
         if datetime.now() >= self.refresh_token_expiry:
             return False
 
         async with self._session.post(
-            "https://sentinel-api.cloud.samknows.com/renew",
+            f"https://{SENTINEL_API_URL}/renew",
             headers={"Content-Type": "application/json"},
             json={"refreshToken": self.refresh_token},
         ) as resp:
@@ -113,99 +93,155 @@ class WhiteboxApi:
                 if response.get("code") == "OK":
                     new_access_token = response["data"]["accessToken"]
                     self.access_token = new_access_token
-                    self.access_token_expiry = self._get_token_expiry(
-                        self, new_access_token
-                    )
+                    self.access_token_expiry = _get_token_expiry(new_access_token)
                     return True
                 return False
             except Exception as e:
                 _LOGGER.error("Failed to renew access token, %s", e)
                 return False
 
-    # TODO dangerous arguments
-    async def _make_request(
-        self, method: str, url: str, json: dict = None, headers: dict | None = {}
-    ):
-        token = await self._get_fresh_token()
-        async with self._session.request(
-            method,
-            url,
-            headers={"Authorization": f"Bearer {token}"} | headers,
-            json=json,
-        ) as resp:
-            response = await resp.json()
-            if response.get("code") == "OK":
-                return response.get("data")
-            else:
-                _LOGGER.error("Request failed: %s %s\n%s", method, url, json)
-                raise RequestFailed()
-
-    async def fetch_data(self):
+    async def fetch_data(self) -> dict[int, UnitUpdate]:
         """Main function to fetch unit(s) information."""
-        await self._fetch_units()
+        self.units = await self._fetch_units()
 
         # _LOGGER.info("Units fetched, %s [Cache %s]", self.units, self._unit_cache)
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        metric = "httpgetmt"
+        # date = datetime.now().strftime("%d-%m-%Y")
+        # yday = (datetime.now() - timedelta(days=7)).strftime("%d-%m-%Y")
 
-        units = {}
+        # x = (
+        #     await _make_request(
+        #         self._session,
+        #         "POST",
+        #         f"https://{UNIT_ANALYTICS_API_URL}/{unit.unit_id}/metric_results",
+        #         json={
+        #             "date": {"from": yday, "to": date},
+        #             "includeAggregated": True,
+        #             "includeTotal": True,
+        #             "localTargetSetResultsOnly": True,
+        #             "aggregation": "daily",
+        #             "metric": metric,
+        #         },
+        #         token=await self._get_fresh_token(),
+        #     )
+        #     for unit in self.units
+        #     for metric in ("httpgetmt", "httppostmt", "udpLatency", "udpPacketLoss")
+        # )
 
-        for unit in self.units:
-            data = await self._make_request(
-                "GET",
-                f"https://unit-analytics-api.cloud.samknows.com/{unit.unit_id}/scheduled_tests_daily?date={today}&metric={metric}",
+        # async for data in x:
+        #     _LOGGER.info("Fetched units data %s", data)
+
+        # TODO make requests in parallel
+
+        return {
+            unit.unit_id: UnitUpdate(
+                details=unit,
+                data=await self.fetch_unit_measurements(
+                    unit.unit_id, metrics=("httpgetmt", "httppostmt")
+                ),
             )
-            if len(data["results"]) > 0:
-                unit.metrics[metric] = data["results"][0][
-                    "metricValue"
-                ]  # TODO log all results not just the first
-                _LOGGER.info("Metrics, %s", unit.metrics)
-                units[unit.unit_id] = unit
+            for unit in self.units
+        }
 
-        return units
+    async def _fetch_units(self) -> list[UnitDetails]:
+        """Loads all units the user has access to and returns them."""
 
-        # token = await self._get_fresh_token()
-        # async with self._session.get(
-        #     "",
-        #     headers={"Authorization": f"Bearer {token}"},
-        # ) as resp:
-        #     response = await resp.json()
-        #     if response.get("code") == "OK":
-        #         return {"102479809": response["data"]}
-        #     else:
-        #         raise RequestFailed()
-
-    async def _fetch_units(self):
-        response = await self._make_request(
+        response = await _make_request(
+            self._session,
             "GET",
-            "https://sentinel-api.cloud.samknows.com/myAccessibles",
+            f"https://{SENTINEL_API_URL}/myAccessibles",
+            token=await self._get_fresh_token(),
         )
-        self.units = []
+        units = []
         for unit_data in response["units"]:
             unit_id = unit_data["unitId"]
-            if self._unit_cache.get(unit_id) is not None:
+            if unit_id in self._unit_cache:
                 _LOGGER.info(f"Adding unit {unit_id} from cache")
-                self.units.append(self._unit_cache.get(unit_id))
+                units.append(self._unit_cache[unit_id])
             else:
                 _LOGGER.info(f"Unit {unit_id}: cache miss, fetching")
                 unit = await self._fetch_unit_information(unit_id)
-                self.units.append(unit)
                 self._unit_cache[unit_id] = unit
+                units.append(unit)
+        return units
 
     async def _fetch_unit_information(self, unit_id: int) -> UnitDetails:
-        data = await self._make_request(
-            "GET", f"https://zeus-api.samknows.one/units/{unit_id}"
+        """Fetch all metadata for a given unit."""
+
+        data = await _make_request(
+            self._session,
+            "GET",
+            f"https://{ZEUS_API_URL}/units/{unit_id}",
+            token=await self._get_fresh_token(),
         )
-        return UnitDetails(
-            unit_id=data["id"],
-            front_name=data["front_name"],
-            mac_address=data["mac"],
-            base=data["base"],
-            serial_number=data["serial_number"],
-            sw_version=data["package_version"],
-            is_tt_compatible=data["is_tt_compatible"],
+        _LOGGER.warn(data)
+        return UnitDetails(unit_id=data["id"], **data)
+
+    async def fetch_unit_measurements(
+        self, unit_id: int, metrics: list[str] = None, date: str | None = None
+    ) -> dict[int, int | str | float]:
+        """Fetches the most recent measurements for a given unit."""
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        metric_results = {}
+
+        for metric in metrics:
+            data = await _make_request(
+                self._session,
+                "GET",
+                f"https://{UNIT_ANALYTICS_API_URL}/{unit_id}/scheduled_tests_daily?date={date}&metric={metric}",
+                token=await self._get_fresh_token(),
+            )
+            if len(data["results"]) > 0:
+                metric_results[metric] = data["results"][0][
+                    "metricValue"
+                ]  # TODO log all results not just the first
+
+        return metric_results
+
+
+async def _make_request(
+    session: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    json: dict = None,
+    *,
+    headers: dict | None = None,
+    token: str | None = None,
+) -> dict:
+    """Makes a request, optionally authenticated, and returns the data if return code is OK."""
+
+    if headers is None:
+        headers = {}
+    if token is not None and "Authorization" not in headers:
+        headers["Authorization"] = f"Bearer {token}"
+
+    async with session.request(
+        method,
+        url,
+        headers=headers,
+        json=json,
+    ) as resp:
+        response = await resp.json()
+        if response.get("code") == "OK":
+            return response.get("data")
+        _LOGGER.error(
+            "Request failed: %s %s\n%s\n%s\n%s", method, url, json, headers, response
         )
+        raise RequestFailed()
+
+
+def _get_token_expiry(token: str) -> datetime:
+    """Calculates the expiry date of a JWT string."""
+
+    decoded_data = jwt.decode(
+        jwt=token,
+        algorithms=["HS256", "RS256"],
+        options={"verify_signature": False},
+    )
+    # _LOGGER.warning("Decoded JWT, %s", decoded_data)
+    return datetime.fromtimestamp(decoded_data["exp"])
 
 
 class RefreshFailed(Exception):

@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN
-from .whitebox import UnitDetails, WhiteboxApi
+from .whitebox import WhiteboxApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,12 +45,13 @@ async def async_setup_entry(
     _LOGGER.info("Coordinator has run %s", coordinator.data)
 
     async_add_entities(
-        DownloadSpeedEntity(coordinator, unit_id, unit)
-        for unit_id, unit in coordinator.data.items()
+        MetricEntity(coordinator, update.unit.unit_id, metric)
+        for update in coordinator.data.values()
+        for metric in update.data
     )
 
 
-class WhitebooxCoordinator(DataUpdateCoordinator):
+class WhitebooxCoordinator(DataUpdateCoordinator[dict[int, UnitUpdate]]):
     """Whitebox coordinator."""
 
     def __init__(self, hass: HomeAssistant, api: WhiteboxApi) -> None:
@@ -64,6 +65,7 @@ class WhitebooxCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(seconds=300),
         )
         self.api = api
+        self._unit_device_cache: dict[int, DeviceInfo] = {}
 
     async def _async_update_data(self):
         """Fetch data from API endpoint.
@@ -92,8 +94,28 @@ class WhitebooxCoordinator(DataUpdateCoordinator):
         finally:
             _LOGGER.warning("Done updating")
 
+    def get_unit_device(self, unit_id: int) -> DeviceInfo:
+        if unit_id in self._unit_device_cache:
+            return self._unit_device_cache.get(unit_id)
 
-class DownloadSpeedEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
+        unit = self.data[unit_id].unit
+
+        device_info = DeviceInfo(
+            identifiers={
+                # Unique identifier within this domain
+                (DOMAIN, unit_id)
+            },
+            name=f"Whitebox {unit.unit_id}",
+            model=f"Whitebox {unit.base}",
+            manufacturer="SamKnows",
+            sw_version=unit.sw_version,
+        )
+        self._unit_device_cache[unit_id] = device_info
+
+        return device_info
+
+
+class MetricEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity):
     """An entity using CoordinatorEntity.
 
     The CoordinatorEntity class provides:
@@ -105,44 +127,51 @@ class DownloadSpeedEntity(CoordinatorEntity[WhitebooxCoordinator], SensorEntity)
     """
 
     def __init__(
-        self, coordinator: WhitebooxCoordinator, unit_id: str, unit: UnitDetails
+        self,
+        coordinator: WhitebooxCoordinator,
+        unit_id: str,
+        metric: str,
     ) -> None:
         """Pass coordinator to CoordinatorEntity."""
         _LOGGER.debug("Initialising entity %s", unit_id)
         super().__init__(coordinator, context=unit_id)
         self.unit_id = unit_id
-        self.unit = unit
+        self.unit = coordinator.data[unit_id].unit
+        self.metric = metric
 
         self._attr_device_class = SensorDeviceClass.DATA_RATE
-        self._attr_unique_id = f"whitebox_{unit_id}_httpgetmt"
+        self._attr_unique_id = f"whitebox_{unit_id}_{metric}"
+        # TODO create a lookup table of metrics -> units
         self._attr_native_unit_of_measurement = "B/s"
         self._attr_suggested_unit_of_measurement = "Mbit/s"
-        self._attr_name = "HTTP Download"
+        self._attr_name = metric
 
-        self._attr_native_value = unit.metrics["httpgetmt"]
+        self._attr_native_value = coordinator.data[unit_id].data[metric]
 
-        _LOGGER.debug("Data is %s", unit.metrics["httpgetmt"])
+        self._attr_device_info = coordinator.get_unit_device(unit_id)
+
+        _LOGGER.debug("Data is %s %s", metric, self._attr_native_value)
         # _LOGGER.debug("Value %s", self._attr_state)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         _LOGGER.debug("Coordinator update %s", self.unit_id)
-        self._attr_state = True  # self.coordinator.data[self.idx]["state"]
+        self._attr_native_value = self.coordinator.data[self.unit_id].data[self.metric]
         self.async_write_ha_state()
 
-    @property
-    def device_info(
-        self,
-    ) -> DeviceInfo:  # TODO or just add it as self._attr_device_info
-        """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                # Unique identifier within this domain
-                (DOMAIN, self.unit_id)
-            },
-            name=f"Whitebox {self.unit_id}",
-            manufacturer="SamKnows",
-            model=f"Whitebox {self.unit.base}",
-            sw_version=self.unit.sw_version,
-        )
+    # @property
+    # def device_info(
+    #     self,
+    # ) -> DeviceInfo:  # TODO or just add it as self._attr_device_info
+    #     """Return the device info."""
+    #     return DeviceInfo(
+    #         identifiers={
+    #             # Unique identifier within this domain
+    #             (DOMAIN, self.unit_id)
+    #         },
+    #         name=f"Whitebox {self.unit_id}",
+    #         manufacturer="SamKnows",
+    #         model=f"Whitebox {self.unit.base}",
+    #         sw_version=self.unit.sw_version,
+    #     )
