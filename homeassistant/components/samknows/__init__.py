@@ -6,9 +6,10 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
-from .whitebox import WhiteboxApi
+from .samknows_whitebox import WhiteboxApi
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -26,7 +27,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     # TODO 1. Create API instance
 
-    api = WhiteboxApi(username=username, password=password)
+    session = aiohttp_client.async_get_clientsession(hass)
+    api = WhiteboxApi(username=username, password=password, session=session)
 
     # TODO 2. Validate the API connection (and authentication)
 

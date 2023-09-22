@@ -14,7 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import aiohttp_client
 
 from .const import DOMAIN
-from .whitebox import WhiteboxApi
+from .samknows_whitebox import WhiteboxApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +40,9 @@ class PlaceholderHub:
     ) -> bool:
         """Test if we can authenticate with the host."""
 
-        whitebox = WhiteboxApi(username, password)
+        whitebox = WhiteboxApi(username, password, session)
 
-        return await whitebox.login(session=session)
+        return await whitebox.login()
 
         # async with session.post(
         #     "https://sentinel-api.cloud.samknows.com/login",
@@ -70,15 +70,13 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     #     your_validate_func, data["username"], data["password"]
     # )
 
-    hub = PlaceholderHub()
+    # hub = PlaceholderHub()
 
-    session = aiohttp_client.async_get_clientsession(hass)
+    api = WhiteboxApi(data["username"], data["password"], session)
 
-    try:
-        if not await hub.authenticate(session, data["username"], data["password"]):
+    with aiohttp_client.async_get_clientsession(hass) as session:
+        if not await api.login():
             raise InvalidAuth
-    finally:
-        session.close()
 
     # If you cannot connect:
     # throw CannotConnect

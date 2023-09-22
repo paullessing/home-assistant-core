@@ -1,16 +1,14 @@
 {
   "domain": "samknows",
   "name": "SamKnows Whitebox",
-  "codeowners": [
-    "@paullessing"
-  ],
+  "codeowners": ["@paullessing"],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://www.home-assistant.io/integrations/samknows",
   "homekit": {},
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
   "requirements": [],
   "ssdp": [],
-  "zeroconf": [],
-  "integration_type": "hub"
+  "zeroconf": []
 }
