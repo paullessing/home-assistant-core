@@ -72,9 +72,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     # hub = PlaceholderHub()
 
-    api = WhiteboxApi(data["username"], data["password"], session)
-
     with aiohttp_client.async_get_clientsession(hass) as session:
+        api = WhiteboxApi(data["username"], data["password"], session)
         if not await api.login():
             raise InvalidAuth
 
